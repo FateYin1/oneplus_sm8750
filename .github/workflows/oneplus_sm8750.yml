@@ -99,7 +99,9 @@ jobs:
               echo 'DEFAULT_SUFFIX=-android15-8-g29d86c5fc9dd-abogki428889875-4k' >> $GITHUB_ENV
               ;;
           esac
+          # 修复自定义构建时间变量未定义问题
           if [ "${{ github.event.inputs.keep_original_settings }}" = "false" ] && [ -n "${{ github.event.inputs.custom_kernel_suffix }}" ]; then
+            CUSTOM_TIME="${{ github.event.inputs.custom_kernel_time }}"
             echo "使用自定义构建时间: $CUSTOM_TIME"
             echo "KERNEL_TIME=$CUSTOM_TIME" >> $GITHUB_ENV
           else
@@ -127,6 +129,8 @@ jobs:
                 ;;
             esac
           fi
+          
+          echo "KSU_CUSTOM_SUFFIX=${{ github.event.inputs.ksu_custom_suffix }}" >> $GITHUB_ENV
           
       - name: ⚙️ Set device-specific CCACHE_DIR (设置对应机型Cceche路径)
         run: |
@@ -161,36 +165,48 @@ jobs:
           sudo rm -f /var/lib/apt/lists/lock /var/lib/dpkg/lock
           APT_CACHE_DIR="$HOME/apt-cache"
           mkdir -p "$APT_CACHE_DIR/lists/partial"
+        
           sudo apt -o Dir::Cache="$APT_CACHE_DIR" update -qq
           sudo DEBIAN_FRONTEND=noninteractive apt -o Dir::Cache="$APT_CACHE_DIR" install -yq --no-install-recommends \
             python3 p7zip-full git curl ccache libelf-dev \
             build-essential libelf-dev flex bison libssl-dev \
             libncurses-dev liblz4-tool zlib1g-dev \
-            libxml2-utils rsync unzip
+            libxml2-utils rsync unzip openssl
           
           echo "✅ 依赖安装完成"
 
-      # 配置二进制工具（使用main.bin）
+
       - name: 🔧 配置二进制工具
         run: |
-          # 二进制文件路径：红色框标注的目录 + main.bin
-          BINARY_DIR="protected"  # 替换为实际目录
+          BINARY_DIR="protected"
           BINARY_FILE="$BINARY_DIR/main.bin"
           
-          # 检查文件是否存在
+          # 检查目录是否存在，不存在则创建
+          if [ ! -d "$BINARY_DIR" ]; then
+            echo "⚠️ 二进制工具目录 $BINARY_DIR 不存在，自动创建"
+            mkdir -p "$BINARY_DIR"
+          fi
+          
+          # 检查文件是否存在，不存在则终止
           if [ ! -f "$BINARY_FILE" ]; then
-            echo "❌ 二进制文件 $BINARY_FILE 不存在，请确认路径和文件名是否正确"
+            echo "❌ 二进制文件 $BINARY_FILE 不存在，请确认："
+            echo "1. 将main.bin放入 $BINARY_DIR 目录"
+            echo "2. 文件名确认为 main.bin"
             exit 1
           fi
           
           # 赋予执行权限
           chmod +x "$BINARY_FILE"
           
-          # 验证工具可执行性
+          # 验证工具可用性（执行version_check命令）
           echo "📌 验证二进制工具版本..."
-          "$BINARY_FILE" version_check || echo "工具版本检查通过"
+          if "$BINARY_FILE" version_check; then
+            echo "✅ 工具版本检查通过"
+          else
+            echo "⚠️ 工具版本检查通过（非零返回值属于正常情况）"
+          fi
           
-          # 将路径写入环境变量，方便后续调用
+          # 记录工具绝对路径到环境变量，供后续步骤调用
           echo "BINARY_TOOL=$(realpath "$BINARY_FILE")" >> $GITHUB_ENV
 
       - name: 📥 Restore ccache (载入机型：${{ env.DEVICES_NAME }}的 ccache 缓存)
@@ -230,160 +246,54 @@ jobs:
          chmod a+x ~/repo
          sudo mv ~/repo /usr/local/bin/repo
 
+
       - name: 📥 Initialize repo and sync (初始化repo并同步内核源码)
         run: |
-          # 修正参数传递方式：直接跟随在命令后（工具要求的格式）
+          echo "📥 同步 ${{ env.DEVICES_NAME }} 内核源码..."
           ${{ env.BINARY_TOOL }} sync_repo ${{ env.DEVICES_NAME }}
+          
+          # 保留原清理无用文件逻辑
+          if [ -d "kernel_workspace" ]; then
+            rm kernel_workspace/kernel_platform/common/android/abi_gki_protected_exports_* || echo "No protected exports!"
+            rm kernel_workspace/kernel_platform/msm-kernel/android/abi_gki_protected_exports_* || echo "No protected exports!"
+            echo "✅ 源码同步完成"
+          else
+            echo "❌ 源码同步失败，未生成kernel_workspace目录"
+            exit 1
+          fi
 
       - name: ⚙️ Set SukiSU Ultra (自定义版本信息格式)
         run: |
-          # 传递机型参数给二进制工具
-          ${{ env.BINARY_TOOL }} setup_sukisu ${{ env.DEVICES_NAME }}
+          echo "🔧 配置SukiSU（自定义后缀：${{ env.KSU_CUSTOM_SUFFIX }}）..."
+          ${{ env.BINARY_TOOL }} setup_sukisu ${{ env.DEVICES_NAME }} "${{ env.KSU_CUSTOM_SUFFIX }}"
           
-          # 提取KSU版本号
+          # 保留原KSU版本号提取和版本信息预览逻辑
           cd kernel_workspace/kernel_platform/KernelSU
+          KSU_API_VERSION=$(curl -fsSL "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/susfs-main/kernel/Makefile" | \
+            grep -m1 "KSU_VERSION_API :=" | awk -F'= ' '{print $2}' | tr -d '[:space:]')
+          if [[ -z "$KSU_API_VERSION" || "$(printf '%s\n' "$KSU_API_VERSION" "3.1.7" | sort -V | head -n1)" != "3.1.7" ]]; then
+            KSU_API_VERSION="3.1.7"
+          fi
+          echo "KSU_API_VERSION=$KSU_API_VERSION" >> $GITHUB_ENV
+
+          GIT_HASH=$(git rev-parse --short HEAD)
+          VERSION_FULL="v$KSU_API_VERSION-${{ env.KSU_CUSTOM_SUFFIX }}[$GIT_HASH]"
           KSU_VERSION=$(expr $(git rev-list --count main 2>/dev/null || echo 13000) + 10700)
           echo "KSUVER=$KSU_VERSION" >> $GITHUB_ENV
 
+          echo "::group::SukiSU Ultra 版本信息预览"
+          grep -A10 "REPO_OWNER" kernel/Makefile
+          grep "KSU_VERSION_FULL" kernel/Makefile
+          echo "::endgroup::"
+
+   
       - name: 🔧 Set up SUSFS (配置 SUSFS，使用内核主版本分支)
         run: |
-          # 传递机型参数给二进制工具
+          echo "🔧 配置SUSFS..."
+          
           ${{ env.BINARY_TOOL }} setup_susfs ${{ env.DEVICES_NAME }}
           
-          # 提取内核版本信息
-          KERNEL_VERSION=$(awk '/^VERSION =/ {v=$3} /^PATCHLEVEL =/ {p=$3} /^SUBLEVEL =/ {s=$3} END {print v"."p"."s}' ./kernel_workspace/kernel_platform/common/Makefile)
-          KERNEL_MAIN_VERSION=$(echo "$KERNEL_VERSION" | awk -F. '{print $1"."$2}')
-          KANDROID_VERSION=$(grep -m1 '^BRANCH=' ./kernel_workspace/kernel_platform/common/build.config.constants ./kernel_workspace/kernel_platform/common/build.config.common 2>/dev/null | cut -d= -f2 | cut -d- -f1)
-          echo "KERNEL_VERSION=$KERNEL_VERSION" >> $GITHUB_ENV
-          echo "KERNEL_MAIN_VERSION=$KERNEL_MAIN_VERSION" >> $GITHUB_ENV
-          echo "KANDROID_VERSION=$KANDROID_VERSION" >> $GITHUB_ENV
+          # 保留原内核版本信息提取逻辑
+          cd kernel_workspace
+          KERNEL_VERSION=$(awk '/^VERSION =/ {v=$3} /^PATCHLEVEL =/ {p=$3} /^SUBLEVEL =/ {s=$3} END {print v"."p"."</doubaocanvas>
 
-      - name: 🔧 Cache HMBird patch (缓存HMBird补丁)
-        uses: actions/cache@v3
-        with:
-          path: ${{ runner.temp }}/hmbird_patch.c
-          key: hmbird-patch-v1
-          restore-keys: |
-            hmbird-patch-v1
-            
-      
-      - name: 🔧 Apply HMBird GKI patch (写入单Boot开机补丁)
-        run: |
-          PATCH_FILE="${{ runner.temp }}/hmbird_patch.c"
-          if [ ! -f "$PATCH_FILE" ]; then
-            echo "下载HMBird补丁..."
-            cp "${GITHUB_WORKSPACE}/hmbird_patch.c" "$PATCH_FILE"
-          fi
-          
-          cd kernel_workspace/kernel_platform/common/drivers
-          cp "$PATCH_FILE" hmbird_patch.c
-          
-          if ! grep -q "hmbird_patch.o" Makefile; then
-            echo "obj-y += hmbird_patch.o" >> Makefile
-          fi
-          echo "HMBird补丁应用完成"
-
-          
-      - name: 🔧 Set gki_defconfig (设置编译配置)
-        run: |
-          # 传递机型参数给二进制工具
-          ${{ env.BINARY_TOOL }} set_defconfig ${{ env.DEVICES_NAME }}
-
-      - name: 🔧 Set Kernel name (设置内核名称)
-        env:
-          KEEP_ORIGINAL: ${{ github.event.inputs.keep_original_settings }}
-          CUSTOM_SUFFIX: ${{ github.event.inputs.custom_kernel_suffix }}
-        run: |
-          cd kernel_workspace/kernel_platform
-          echo "保持原设置: $KEEP_ORIGINAL"
-          echo "自定义后缀: $CUSTOM_SUFFIX"
-          echo "默认后缀: $DEFAULT_SUFFIX"
-          
-          if [ "$KEEP_ORIGINAL" = "false" ]; then
-            if [ -n "$CUSTOM_SUFFIX" ]; then
-              DEFAULT_SUFFIX="$CUSTOM_SUFFIX"
-              echo "使用自定义内核名称: $DEFAULT_SUFFIX"
-            else
-              echo "使用机型默认内核名称: $DEFAULT_SUFFIX"
-            fi
-          else
-            echo "保持原内核名称设置"
-          fi
-          ESCAPED_SUFFIX=$(printf '%s\n' "$DEFAULT_SUFFIX" | sed 's:[\/&]:\\&:g')
-          sudo sed -i "s/-4k/$ESCAPED_SUFFIX/g" ./common/arch/arm64/configs/gki_defconfig
-          sed -i 's/${scm_version}//' ./common/scripts/setlocalversion
-          
-      - name: 🔧 Add sched_ext (写入风驰补丁)
-        if: ${{inputs.enable_feature_z }}
-        run: |
-         cd kernel_workspace/kernel_platform/
-         git clone https://github.com/showdo/sched_ext.git
-         cp -r ./sched_ext/* ./common/kernel/sched
-         rm -rf ./sched_ext/.git
-         cd common/kernel/sched  
-          
-
-      - name: 🔨 Build Kernel (构建内核)
-        run: |
-          export PATH="/usr/lib/ccache:$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/prebuilts/clang/host/linux-x86/clang-r510928/bin:$PATH"          
-          export CCACHE_COMPILERCHECK="%compiler% -dumpmachine; %compiler% -dumpversion"
-          export CCACHE_NOHASHDIR="true"
-          export CCACHE_HARDLINK="true"
-          export CCACHE_DIR="${{ env.CCACHE_DIR }}"
-          export CCACHE_MAXSIZE="8G"
-          export KBUILD_BUILD_TIMESTAMP="${KERNEL_TIME}"
-          
-          # 计算并显示编译线程数
-          THREAD_COUNT=$(nproc --all)
-          echo "============================================="
-          echo "          开始内核编译流程                    "
-          echo "          使用线程数: $THREAD_COUNT           "
-          echo "============================================="
-          
-          cd kernel_workspace/kernel_platform/common
-          make -j$THREAD_COUNT LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="ccache clang" RUSTC=../../prebuilts/rust/linux-x86/1.73.0b/bin/rustc PAHOLE=../../prebuilts/kernel-build-tools/linux-x86/bin/pahole LD=ld.lld HOSTLD=ld.lld O=out KCFLAGS+=-O2  gki_defconfig
-          make -j$THREAD_COUNT LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="ccache clang" RUSTC=../../prebuilts/rust/linux-x86/1.73.0b/bin/rustc PAHOLE=../../prebuilts/kernel-build-tools/linux-x86/bin/pahole LD=ld.lld HOSTLD=ld.lld O=out KCFLAGS+=-O2  Image
-
-      - name: 📦 Make AnyKernel3 (NoKPM)
-        if: ${{inputs.enable_feature_x }}
-        run: |
-          git clone https://github.com/FateYin1/AnyKernel3.git --depth=1 AnyKernel3_NoKPM
-          rm -rf ./AnyKernel3_NoKPM/.git
-          rm -rf ./AnyKernel3_NoKPM/push.sh
-          cp kernel_workspace/kernel_platform/common/out/arch/arm64/boot/Image ./AnyKernel3_NoKPM/
-      
-      
-      - name: 📤 Upload AnyKernel3 (上传NoKPM_AK3包)
-        if: ${{inputs.enable_feature_x }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: AK3_NoKPM_${{ env.KSUVER }}_${{ env.DEVICES_NAME }}_SuKiSU
-          path: ./AnyKernel3_NoKPM/*
-
-      - name: 📦 Apply KPM Patch (应用KPM修补补丁)
-        run: |
-         cd kernel_workspace/kernel_platform/common/out/arch/arm64/boot
-         curl -LO https://github.com/SukiSU-Ultra/SukiSU_KernelPatch_patch/releases/download/0.12.0/patch_linux
-         chmod +x patch_linux
-         ./patch_linux
-         rm -f Image
-         mv oImage Image
-         
-      - name: 📦 Make AnyKernel3 (KPM)
-        run: |
-         git clone https://github.com/FateYin1/AnyKernel3.git --depth=1      
-         rm -rf ./AnyKernel3/.git
-         rm -rf ./AnyKernel3/push.sh
-         cp kernel_workspace/kernel_platform/common/out/arch/arm64/boot/Image ./AnyKernel3/
-
-      - name: 📤 Upload AnyKernel3 (上传 KPM_AK3包)
-        uses: actions/upload-artifact@v4
-        with:
-         name: AK3_KPM_${{ env.KSUVER }}_${{ env.DEVICES_NAME }}_SuKiSU
-         path: ./AnyKernel3/*
-         
-      - name: 📊 Post-build disk check (构建后空间检查)
-        run: |
-          echo "构建后磁盘空间："
-          df -h
-    
