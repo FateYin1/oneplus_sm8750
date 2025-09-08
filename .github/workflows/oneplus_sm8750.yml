@@ -1,4 +1,4 @@
-name: oneplus_sm8750
+name: Build_oneplus_sm8750
 on:
   workflow_dispatch:
     inputs:
@@ -173,7 +173,8 @@ jobs:
       # 配置二进制工具（使用main.bin）
       - name: 🔧 配置二进制工具
         run: |
-          BINARY_DIR="protected"  
+          # 二进制文件路径：红色框标注的目录 + main.bin
+          BINARY_DIR=".protected"  # 替换为实际目录
           BINARY_FILE="$BINARY_DIR/main.bin"
           
           # 检查文件是否存在
@@ -231,17 +232,13 @@ jobs:
 
       - name: 📥 Initialize repo and sync (初始化repo并同步内核源码)
         run: |
-          # 使用二进制工具执行同步操作
-          ${{ env.BINARY_TOOL }} sync_repo \
-            --repo-manifest ${{ env.REPO_MANIFEST }} \
-            --device-name ${{ env.DEVICES_NAME }}
+          # 修正参数传递方式：直接跟随在命令后（工具要求的格式）
+          ${{ env.BINARY_TOOL }} sync_repo ${{ env.DEVICES_NAME }}
 
       - name: ⚙️ Set SukiSU Ultra (自定义版本信息格式)
         run: |
-          # 使用二进制工具配置SukiSU
-          ${{ env.BINARY_TOOL }} setup_sukisu \
-            --repo-manifest ${{ env.REPO_MANIFEST }} \
-            --device-name ${{ env.DEVICES_NAME }}
+          # 传递机型参数给二进制工具
+          ${{ env.BINARY_TOOL }} setup_sukisu ${{ env.DEVICES_NAME }}
           
           # 提取KSU版本号
           cd kernel_workspace/kernel_platform/KernelSU
@@ -250,10 +247,8 @@ jobs:
 
       - name: 🔧 Set up SUSFS (配置 SUSFS，使用内核主版本分支)
         run: |
-          # 使用二进制工具配置SUSFS
-          ${{ env.BINARY_TOOL }} setup_susfs \
-            --repo-manifest ${{ env.REPO_MANIFEST }} \
-            --device-name ${{ env.DEVICES_NAME }}
+          # 传递机型参数给二进制工具
+          ${{ env.BINARY_TOOL }} setup_susfs ${{ env.DEVICES_NAME }}
           
           # 提取内核版本信息
           KERNEL_VERSION=$(awk '/^VERSION =/ {v=$3} /^PATCHLEVEL =/ {p=$3} /^SUBLEVEL =/ {s=$3} END {print v"."p"."s}' ./kernel_workspace/kernel_platform/common/Makefile)
@@ -291,10 +286,8 @@ jobs:
           
       - name: 🔧 Set gki_defconfig (设置编译配置)
         run: |
-          # 使用二进制工具设置编译配置
-          ${{ env.BINARY_TOOL }} set_defconfig \
-            --repo-manifest ${{ env.REPO_MANIFEST }} \
-            --device-name ${{ env.DEVICES_NAME }}
+          # 传递机型参数给二进制工具
+          ${{ env.BINARY_TOOL }} set_defconfig ${{ env.DEVICES_NAME }}
 
       - name: 🔧 Set Kernel name (设置内核名称)
         env:
