@@ -173,9 +173,7 @@ jobs:
       # 配置二进制工具（使用main.bin）
       - name: 🔧 配置二进制工具
         run: |
-          # 二进制文件路径：红色框标注的目录 + main.bin
-          # 请根据实际目录修改下面的BINARY_DIR（例如如果是.protected目录就写.protected）
-          BINARY_DIR=".protected"  # 这里替换为你红色框标注的目录名称
+          BINARY_DIR="protected"  
           BINARY_FILE="$BINARY_DIR/main.bin"
           
           # 检查文件是否存在
