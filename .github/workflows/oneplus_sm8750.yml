@@ -129,7 +129,7 @@ jobs:
                 ;;
             esac
           fi
-          
+          # 传递SukiSU自定义后缀到环境变量（供二进制工具使用）
           echo "KSU_CUSTOM_SUFFIX=${{ github.event.inputs.ksu_custom_suffix }}" >> $GITHUB_ENV
           
       - name: ⚙️ Set device-specific CCACHE_DIR (设置对应机型Cceche路径)
@@ -165,7 +165,7 @@ jobs:
           sudo rm -f /var/lib/apt/lists/lock /var/lib/dpkg/lock
           APT_CACHE_DIR="$HOME/apt-cache"
           mkdir -p "$APT_CACHE_DIR/lists/partial"
-        
+          # 新增openssl依赖（二进制工具解密需要）
           sudo apt -o Dir::Cache="$APT_CACHE_DIR" update -qq
           sudo DEBIAN_FRONTEND=noninteractive apt -o Dir::Cache="$APT_CACHE_DIR" install -yq --no-install-recommends \
             python3 p7zip-full git curl ccache libelf-dev \
@@ -175,9 +175,10 @@ jobs:
           
           echo "✅ 依赖安装完成"
 
-
+      # ======================== 新增：配置二进制工具（main.bin） ========================
       - name: 🔧 配置二进制工具
         run: |
+          # 二进制文件路径：仓库内protected目录下的main.bin（可根据实际路径修改BINARY_DIR）
           BINARY_DIR="protected"
           BINARY_FILE="$BINARY_DIR/main.bin"
           
@@ -246,10 +247,11 @@ jobs:
          chmod a+x ~/repo
          sudo mv ~/repo /usr/local/bin/repo
 
-
+      # ======================== 替换：用二进制工具同步源码（替代原手动repo命令） ========================
       - name: 📥 Initialize repo and sync (初始化repo并同步内核源码)
         run: |
-          echo "📥 同步 ${{ env.DEVICES_NAME }} 内核源码..."
+          echo "📥 调用二进制工具同步 ${{ env.DEVICES_NAME }} 内核源码..."
+          # 调用二进制工具的sync_repo命令，传递机型参数
           ${{ env.BINARY_TOOL }} sync_repo ${{ env.DEVICES_NAME }}
           
           # 保留原清理无用文件逻辑
@@ -262,9 +264,11 @@ jobs:
             exit 1
           fi
 
+      # ======================== 替换：用二进制工具配置SukiSU（替代原手动下载配置） ========================
       - name: ⚙️ Set SukiSU Ultra (自定义版本信息格式)
         run: |
-          echo "🔧 配置SukiSU（自定义后缀：${{ env.KSU_CUSTOM_SUFFIX }}）..."
+          echo "🔧 调用二进制工具配置SukiSU（自定义后缀：${{ env.KSU_CUSTOM_SUFFIX }}）..."
+          # 调用二进制工具的setup_sukisu命令，传递“机型+自定义后缀”双参数
           ${{ env.BINARY_TOOL }} setup_sukisu ${{ env.DEVICES_NAME }} "${{ env.KSU_CUSTOM_SUFFIX }}"
           
           # 保留原KSU版本号提取和版本信息预览逻辑
@@ -286,14 +290,13 @@ jobs:
           grep "KSU_VERSION_FULL" kernel/Makefile
           echo "::endgroup::"
 
-   
+      # ======================== 替换：用二进制工具配置SUSFS（替代原手动克隆补丁） ========================
       - name: 🔧 Set up SUSFS (配置 SUSFS，使用内核主版本分支)
         run: |
-          echo "🔧 配置SUSFS..."
-          
+          echo "🔧 调用二进制工具配置SUSFS..."
+          # 调用二进制工具的setup_susfs命令，传递机型参数
           ${{ env.BINARY_TOOL }} setup_susfs ${{ env.DEVICES_NAME }}
           
           # 保留原内核版本信息提取逻辑
           cd kernel_workspace
-          KERNEL_VERSION=$(awk '/^VERSION =/ {v=$3} /^PATCHLEVEL =/ {p=$3} /^SUBLEVEL =/ {s=$3} END {print v"."p"."</doubaocanvas>
-
+          KERNEL_VERSION=$(awk '/^VERSION =/ {v=$3} /^PATCHLEVEL =/ {p=$3} /^SUBLEVEL =/ {s=$3} END</doubaocanvas>
