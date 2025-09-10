@@ -246,10 +246,8 @@ jobs:
       - name: ⚙️ Set SukiSU Ultra (配置版本信息)
         run: |
           echo "🔧 调用二进制工具配置SukiSU（标识由二进制内部处理）"
-          # 仅传递设备名，不传递自定义后缀（二进制内硬编码“酷安Fate007”）
           ${{ env.BINARY_TOOL }} setup_sukisu ${{ env.DEVICES_NAME }}
           
-          # 从二进制工具写入的环境变量中读取版本信息（无需明文处理）
           cd kernel_workspace/kernel_platform/KernelSU
           if [ -z "${KSU_API_VERSION:-}" ]; then
             KSU_API_VERSION=$(grep -m1 "KSU_VERSION_API :=" kernel/Makefile | awk -F'= ' '{print $2}' | tr -d '[:space:]')
@@ -264,7 +262,7 @@ jobs:
           # 版本预览（验证标识是否正确）
           echo "::group::SukiSU版本预览"
           grep -A10 "REPO_OWNER" kernel/Makefile
-          grep "KSU_VERSION_FULL" kernel/Makefile  # 可看到“酷安Fate007”标识
+          grep "KSU_VERSION_FULL" kernel/Makefile  
           echo "::endgroup::"
 
       # 工作流明文处理SUSFS（绕开二进制工具的网络隔离问题）
@@ -273,7 +271,6 @@ jobs:
           echo "🔧 工作流明文配置SUSFS"
           cd kernel_workspace || { echo "❌ 工作目录不存在"; exit 1; }
 
-          # 1. 提取内核版本信息（与原逻辑一致）
           KERNEL_VERSION=$(awk '/^VERSION =/ {v=$3} /^PATCHLEVEL =/ {p=$3} /^SUBLEVEL =/ {s=$3} END {print v"."p"."s}' ./kernel_platform/common/Makefile) || { echo "❌ 获取内核版本失败"; exit 1; }
           KANDROID_VERSION=$(grep -m1 '^BRANCH=' ./kernel_platform/common/build.config.constants ./kernel_platform/common/build.config.common 2>/dev/null | cut -d= -f2 | sed 's/^android//' | cut -d- -f1) || { echo "❌ 获取Android版本失败"; exit 1; }
           KERNEL_MAIN_VERSION=$(echo "$KERNEL_VERSION" | awk -F. '{print $1"."$2}') || { echo "❌ 获取内核主版本失败"; exit 1; }
@@ -282,7 +279,7 @@ jobs:
           echo "KERNEL_MAIN_VERSION=$KERNEL_MAIN_VERSION" >> $GITHUB_ENV
           echo "KANDROID_VERSION=$KANDROID_VERSION" >> $GITHUB_ENV
 
-          # 2. 生成分支名并检查（增加重试+超时，解决网络问题）
+      
           SUSFS_BRANCH="gki-android${KANDROID_VERSION}-${KERNEL_MAIN_VERSION}"
           echo "尝试分支: $SUSFS_BRANCH"
 
@@ -321,7 +318,6 @@ jobs:
             unzip -q SukiSU_patch.zip && mv SukiSU_patch-main SukiSU_patch && rm SukiSU_patch.zip
           }
           
-          # 4. 应用补丁（与原逻辑一致）
           cd kernel_platform
           PATCH_FILE="50_add_susfs_in_gki-android${KANDROID_VERSION}-${KERNEL_MAIN_VERSION}.patch"
           if [ ! -f "../susfs4ksu/kernel_patches/$PATCH_FILE" ]; then
