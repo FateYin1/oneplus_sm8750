@@ -131,7 +131,6 @@ jobs:
           fi
           # 传递SukiSU自定义后缀到环境变量
           echo "KSU_CUSTOM_SUFFIX=${{ github.event.inputs.ksu_custom_suffix }}" >> $GITHUB_ENV
-          # 新增：SUSFS仓库地址（与原二进制工具一致）
           echo "SUSFS_REPO=https://gitlab.com/simonpunk/susfs4ksu.git" >> $GITHUB_ENV
           echo "SUKIPATCH_REPO=https://github.com/SukiSU-Ultra/SukiSU_patch.git" >> $GITHUB_ENV
           
@@ -168,7 +167,6 @@ jobs:
           sudo rm -f /var/lib/apt/lists/lock /var/lib/dpkg/lock
           APT_CACHE_DIR="$HOME/apt-cache"
           mkdir -p "$APT_CACHE_DIR/lists/partial"
-          # 新增openssl依赖（二进制工具需要）
           sudo apt -o Dir::Cache="$APT_CACHE_DIR" update -qq
           sudo DEBIAN_FRONTEND=noninteractive apt -o Dir::Cache="$APT_CACHE_DIR" install -yq --no-install-recommends \
             python3 p7zip-full git curl ccache libelf-dev \
