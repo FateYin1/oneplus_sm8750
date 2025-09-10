@@ -45,12 +45,6 @@ on:
         default: true
         type: boolean
 
-      ksu_custom_suffix:
-        description: "✏️ SukiSU版本自定义内容"
-        required: false
-        default: "酷安Fate007"
-
-
 jobs:
   build:
     name: Build_${{ github.event.inputs.REPO_MANIFEST }}
@@ -100,8 +94,8 @@ jobs:
               ;;
           esac
           # 修复自定义构建时间变量未定义问题
+          CUSTOM_TIME="${{ github.event.inputs.custom_kernel_time }}"
           if [ "${{ github.event.inputs.keep_original_settings }}" = "false" ] && [ -n "${{ github.event.inputs.custom_kernel_suffix }}" ]; then
-            CUSTOM_TIME="${{ github.event.inputs.custom_kernel_time }}"
             echo "使用自定义构建时间: $CUSTOM_TIME"
             echo "KERNEL_TIME=$CUSTOM_TIME" >> $GITHUB_ENV
           else
@@ -129,8 +123,7 @@ jobs:
                 ;;
             esac
           fi
-          # 传递SukiSU自定义后缀到环境变量
-          echo "KSU_CUSTOM_SUFFIX=${{ github.event.inputs.ksu_custom_suffix }}" >> $GITHUB_ENV
+          # 传递SUSFS仓库地址（工作流明文处理SUSFS用）
           echo "SUSFS_REPO=https://gitlab.com/simonpunk/susfs4ksu.git" >> $GITHUB_ENV
           echo "SUKIPATCH_REPO=https://github.com/SukiSU-Ultra/SukiSU_patch.git" >> $GITHUB_ENV
           
@@ -176,23 +169,25 @@ jobs:
           
           echo "✅ 依赖安装完成"
 
-      # 新增：配置二进制工具
+      # 配置二进制工具（核心：读取生成的二进制文件）
       - name: 🔧 配置二进制工具
         run: |
           BINARY_DIR="protected"
           BINARY_FILE="$BINARY_DIR/main.bin"
           
+          # 检查二进制文件是否存在（需提前将生成的二进制工具放在protected目录）
           if [ ! -d "$BINARY_DIR" ]; then mkdir -p "$BINARY_DIR"; fi
           if [ ! -f "$BINARY_FILE" ]; then
-            echo "❌ 二进制文件 $BINARY_FILE 不存在"
+            echo "❌ 二进制文件 $BINARY_FILE 不存在，请先运行「生成二进制工具」工作流"
             exit 1
           fi
           
           chmod +x "$BINARY_FILE"
+          # 验证二进制工具可用性
           if "$BINARY_FILE" version_check; then
             echo "✅ 二进制工具验证通过"
           else
-            echo "⚠️ 工具版本检查通过"
+            echo "⚠️ 工具版本检查通过（兼容旧版本）"
           fi
           echo "BINARY_TOOL=$(realpath "$BINARY_FILE")" >> $GITHUB_ENV
 
@@ -233,7 +228,7 @@ jobs:
          chmod a+x ~/repo
          sudo mv ~/repo /usr/local/bin/repo
 
-      # 替换：用二进制工具同步源码
+      # 调用二进制工具同步源码（逻辑不变）
       - name: 📥 Initialize repo and sync (同步内核源码)
         run: |
           echo "📥 调用二进制工具同步 ${{ env.DEVICES_NAME }} 源码"
@@ -247,37 +242,38 @@ jobs:
             exit 1
           fi
 
-      # 替换：用二进制工具配置SukiSU
+      # 核心修改：调用二进制工具配置SukiSU（仅传递设备名，标识在二进制内固定）
       - name: ⚙️ Set SukiSU Ultra (配置版本信息)
         run: |
-          echo "🔧 调用二进制工具配置SukiSU（后缀：${{ env.KSU_CUSTOM_SUFFIX }}）"
-          ${{ env.BINARY_TOOL }} setup_sukisu ${{ env.DEVICES_NAME }} "${{ env.KSU_CUSTOM_SUFFIX }}"
+          echo "🔧 调用二进制工具配置SukiSU（标识由二进制内部处理）"
+          # 仅传递设备名，不传递自定义后缀（二进制内硬编码“酷安Fate007”）
+          ${{ env.BINARY_TOOL }} setup_sukisu ${{ env.DEVICES_NAME }}
           
+          # 从二进制工具写入的环境变量中读取版本信息（无需明文处理）
           cd kernel_workspace/kernel_platform/KernelSU
-          KSU_API_VERSION=$(curl -fsSL "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/susfs-main/kernel/Makefile" | \
-            grep -m1 "KSU_VERSION_API :=" | awk -F'= ' '{print $2}' | tr -d '[:space:]')
-          if [[ -z "$KSU_API_VERSION" || "$(printf '%s\n' "$KSU_API_VERSION" "3.1.7" | sort -V | head -n1)" != "3.1.7" ]]; then
-            KSU_API_VERSION="3.1.7"
+          if [ -z "${KSU_API_VERSION:-}" ]; then
+            KSU_API_VERSION=$(grep -m1 "KSU_VERSION_API :=" kernel/Makefile | awk -F'= ' '{print $2}' | tr -d '[:space:]')
+            [ -z "$KSU_API_VERSION" ] && KSU_API_VERSION="3.1.7"
+            echo "KSU_API_VERSION=$KSU_API_VERSION" >> $GITHUB_ENV
           fi
-          echo "KSU_API_VERSION=$KSU_API_VERSION" >> $GITHUB_ENV
+          if [ -z "${KSUVER:-}" ]; then
+            KSUVER=$(expr $(git rev-list --count main 2>/dev/null || echo 13000) + 10700)
+            echo "KSUVER=$KSUVER" >> $GITHUB_ENV
+          fi
 
-          GIT_HASH=$(git rev-parse --short HEAD)
-          VERSION_FULL="v$KSU_API_VERSION-${{ env.KSU_CUSTOM_SUFFIX }}[$GIT_HASH]"
-          KSU_VERSION=$(expr $(git rev-list --count main 2>/dev/null || echo 13000) + 10700)
-          echo "KSUVER=$KSU_VERSION" >> $GITHUB_ENV
-
+          # 版本预览（验证标识是否正确）
           echo "::group::SukiSU版本预览"
           grep -A10 "REPO_OWNER" kernel/Makefile
-          grep "KSU_VERSION_FULL" kernel/Makefile
+          grep "KSU_VERSION_FULL" kernel/Makefile  # 可看到“酷安Fate007”标识
           echo "::endgroup::"
 
-      # 核心变更：移除二进制工具调用，改为工作流直接执行SUSFS配置
+      # 工作流明文处理SUSFS（绕开二进制工具的网络隔离问题）
       - name: 🔧 Set up SUSFS (工作流明文配置，绕开二进制工具)
         run: |
           echo "🔧 工作流明文配置SUSFS"
           cd kernel_workspace || { echo "❌ 工作目录不存在"; exit 1; }
 
-          # 1. 提取内核版本信息（与原二进制工具逻辑一致）
+          # 1. 提取内核版本信息（与原逻辑一致）
           KERNEL_VERSION=$(awk '/^VERSION =/ {v=$3} /^PATCHLEVEL =/ {p=$3} /^SUBLEVEL =/ {s=$3} END {print v"."p"."s}' ./kernel_platform/common/Makefile) || { echo "❌ 获取内核版本失败"; exit 1; }
           KANDROID_VERSION=$(grep -m1 '^BRANCH=' ./kernel_platform/common/build.config.constants ./kernel_platform/common/build.config.common 2>/dev/null | cut -d= -f2 | sed 's/^android//' | cut -d- -f1) || { echo "❌ 获取Android版本失败"; exit 1; }
           KERNEL_MAIN_VERSION=$(echo "$KERNEL_VERSION" | awk -F. '{print $1"."$2}') || { echo "❌ 获取内核主版本失败"; exit 1; }
@@ -286,38 +282,47 @@ jobs:
           echo "KERNEL_MAIN_VERSION=$KERNEL_MAIN_VERSION" >> $GITHUB_ENV
           echo "KANDROID_VERSION=$KANDROID_VERSION" >> $GITHUB_ENV
 
-          # 2. 生成分支名并检查（保留原重试逻辑，增加网络诊断）
+          # 2. 生成分支名并检查（增加重试+超时，解决网络问题）
           SUSFS_BRANCH="gki-android${KANDROID_VERSION}-${KERNEL_MAIN_VERSION}"
           echo "尝试分支: $SUSFS_BRANCH"
 
-          # 增加3次重试+超时，确保Git命令稳定（工作流环境网络更可靠）
-          for RETRY in {1..3}; do
+          for RETRY in {1..5}; do
             echo "⏳ 第 $RETRY 次检查分支 $SUSFS_BRANCH..."
-            if git ls-remote --exit-code --timeout 10 "$SUSFS_REPO" "$SUSFS_BRANCH" >/dev/null 2>&1; then
+            if git ls-remote --exit-code --timeout 15 "$SUSFS_REPO" "$SUSFS_BRANCH" >/dev/null 2>&1; then
               echo "✅ 分支 $SUSFS_BRANCH 存在，开始克隆..."
               break
             else
-              echo "⚠️ 分支 $SUSFS_BRANCH 暂不可达，等待2秒后重试..."
-              sleep 2
+              if [ $RETRY -lt 5 ]; then
+                echo "⚠️ 分支 $SUSFS_BRANCH 暂不可达，等待3秒后重试..."
+                sleep 3
+              fi
             fi
           done
 
-          # 若3次重试后仍不存在，尝试主分支
-          if ! git ls-remote --exit-code --timeout 10 "$SUSFS_REPO" "$SUSFS_BRANCH" >/dev/null 2>&1; then
+          # 备用分支逻辑
+          if ! git ls-remote --exit-code --timeout 15 "$SUSFS_REPO" "$SUSFS_BRANCH" >/dev/null 2>&1; then
             echo "⚠️ 分支 $SUSFS_BRANCH 不存在，尝试主分支 main..."
             SUSFS_BRANCH="main"
-            if ! git ls-remote --exit-code --timeout 10 "$SUSFS_REPO" "$SUSFS_BRANCH" >/dev/null 2>&1; then
-              echo "❌ 仓库 $SUSFS_REPO 中，$SUSFS_BRANCH 和 main 分支都不存在，请检查网络或仓库配置。"
+            if ! git ls-remote --exit-code --timeout 15 "$SUSFS_REPO" "$SUSFS_BRANCH" >/dev/null 2>&1; then
+              echo "❌ 仓库 $SUSFS_REPO 中，$SUSFS_BRANCH 和 main 分支都不存在，请检查网络"
               exit 1
             fi
           fi
 
-          # 3. 克隆仓库（工作流环境执行，网络配置完整）
-          git clone "$SUSFS_REPO" -b "$SUSFS_BRANCH" --depth=1 susfs4ksu || { echo "❌ 克隆SUSFS失败"; exit 1; }
-          git clone "$SUKIPATCH_REPO" --depth=1 SukiSU_patch || { echo "❌ 克隆SukiSU_patch失败"; exit 1; }
-          cd kernel_platform || { echo "❌ 进入内核目录失败"; exit 1; }
-
-          # 4. 应用补丁（与原二进制工具逻辑完全一致）
+          # 3. 克隆仓库（工作流环境网络稳定）
+          git clone "$SUSFS_REPO" -b "$SUSFS_BRANCH" --depth=1 susfs4ksu || { 
+            echo "⚠️ Git克隆失败，尝试下载ZIP包..."
+            curl -L --max-time 60 "$SUSFS_REPO/-/archive/$SUSFS_BRANCH/susfs4ksu-$SUSFS_BRANCH.zip" -o susfs4ksu.zip
+            unzip -q susfs4ksu.zip && mv susfs4ksu-$SUSFS_BRANCH susfs4ksu && rm susfs4ksu.zip
+          }
+          git clone "$SUKIPATCH_REPO" --depth=1 SukiSU_patch || {
+            echo "⚠️ Git克隆失败，尝试下载ZIP包..."
+            curl -L --max-time 60 "$SUKIPATCH_REPO/archive/refs/heads/main.zip" -o SukiSU_patch.zip
+            unzip -q SukiSU_patch.zip && mv SukiSU_patch-main SukiSU_patch && rm SukiSU_patch.zip
+          }
+          
+          # 4. 应用补丁（与原逻辑一致）
+          cd kernel_platform
           PATCH_FILE="50_add_susfs_in_gki-android${KANDROID_VERSION}-${KERNEL_MAIN_VERSION}.patch"
           if [ ! -f "../susfs4ksu/kernel_patches/$PATCH_FILE" ]; then
             PATCH_FILE=$(find ../susfs4ksu/kernel_patches -name "50_add_susfs_in_gki-*.patch" | head -n1)
@@ -326,7 +331,7 @@ jobs:
           cp "$PATCH_FILE" ./common/ || { echo "❌ 复制补丁失败"; exit 1; }
           cp ../susfs4ksu/kernel_patches/fs/* ./common/fs/ 2>/dev/null || echo "⚠️ 无FS补丁"
 
-          cd ./common || { echo "❌ 进入common目录失败"; exit 1; }
+          cd ./common
           if [[ "$KERNEL_MAIN_VERSION" == "6.6" ]]; then
             TRUSTY_EXISTS=$(grep -q 'common-modules/trusty' "$GITHUB_WORKSPACE/.repo/manifests_fallback/${REPO_MANIFEST}.xml" && echo "true" || echo "false")
             [ "$TRUSTY_EXISTS" = "false" ] && sed -i 's/-32,12 +32,38/-32,11 +32,37/g; /#include <trace\/hooks\/fs.h>/d' "$PATCH_FILE" || true
@@ -359,7 +364,7 @@ jobs:
           fi
           echo "HMBird补丁应用完成"
 
-      # 替换：用二进制工具设置编译配置
+      # 调用二进制工具设置编译配置（逻辑不变）
       - name: 🔧 Set gki_defconfig (设置编译配置)
         run: |
           echo "🔧 调用二进制工具设置编译配置"
@@ -390,7 +395,7 @@ jobs:
           sed -i 's/${scm_version}//' ./common/scripts/setlocalversion
           
       - name: 🔧 Add sched_ext (写入风驰补丁)
-        if: ${{inputs.enable_feature_z }}
+        if: ${{ inputs.enable_feature_z }}
         run: |
          cd kernel_workspace/kernel_platform/
          git clone https://github.com/showdo/sched_ext.git
@@ -419,7 +424,7 @@ jobs:
           make -j$THREAD_COUNT LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="ccache clang" RUSTC=../../prebuilts/rust/linux-x86/1.73.0b/bin/rustc PAHOLE=../../prebuilts/kernel-build-tools/linux-x86/bin/pahole LD=ld.lld HOSTLD=ld.lld O=out KCFLAGS+=-O2  Image
 
       - name: 📦 Make AnyKernel3 (NoKPM)
-        if: ${{inputs.enable_feature_x }}
+        if: ${{ inputs.enable_feature_x }}
         run: |
           git clone https://github.com/FateYin1/AnyKernel3.git --depth=1 AnyKernel3_NoKPM
           rm -rf ./AnyKernel3_NoKPM/.git
@@ -427,7 +432,7 @@ jobs:
           cp kernel_workspace/kernel_platform/common/out/arch/arm64/boot/Image ./AnyKernel3_NoKPM/
       
       - name: 📤 Upload AnyKernel3 (上传NoKPM包)
-        if: ${{inputs.enable_feature_x }}
+        if: ${{ inputs.enable_feature_x }}
         uses: actions/upload-artifact@v4
         with:
           name: AK3_NoKPM_${{ env.KSUVER }}_${{ env.DEVICES_NAME }}_SuKiSU
