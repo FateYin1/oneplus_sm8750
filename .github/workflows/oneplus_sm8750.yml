@@ -131,6 +131,9 @@ jobs:
           fi
           # 传递SukiSU自定义后缀到环境变量
           echo "KSU_CUSTOM_SUFFIX=${{ github.event.inputs.ksu_custom_suffix }}" >> $GITHUB_ENV
+          # 新增：SUSFS仓库地址（与原二进制工具一致）
+          echo "SUSFS_REPO=https://gitlab.com/simonpunk/susfs4ksu.git" >> $GITHUB_ENV
+          echo "SUKIPATCH_REPO=https://github.com/SukiSU-Ultra/SukiSU_patch.git" >> $GITHUB_ENV
           
       - name: ⚙️ Set device-specific CCACHE_DIR (设置对应机型Cceche路径)
         run: |
@@ -270,20 +273,69 @@ jobs:
           grep "KSU_VERSION_FULL" kernel/Makefile
           echo "::endgroup::"
 
-      # 替换：用二进制工具配置SUSFS
-      - name: 🔧 Set up SUSFS (配置文件系统)
+      # 核心变更：移除二进制工具调用，改为工作流直接执行SUSFS配置
+      - name: 🔧 Set up SUSFS (工作流明文配置，绕开二进制工具)
         run: |
-          echo "🔧 调用二进制工具配置SUSFS"
-          ${{ env.BINARY_TOOL }} setup_susfs ${{ env.DEVICES_NAME }}
-          
-          cd kernel_workspace
-          KERNEL_VERSION=$(awk '/^VERSION =/ {v=$3} /^PATCHLEVEL =/ {p=$3} /^SUBLEVEL =/ {s=$3} END {print v"."p"."s}' ./kernel_platform/common/Makefile)
-          KANDROID_VERSION=$(grep -m1 '^BRANCH=' ./kernel_platform/common/build.config.constants ./kernel_platform/common/build.config.common 2>/dev/null | cut -d= -f2 | cut -d- -f1)
-          KERNEL_MAIN_VERSION=$(echo "$KERNEL_VERSION" | awk -F. '{print $1"."$2}')
-          echo "内核版本: $KERNEL_VERSION，主版本: $KERNEL_MAIN_VERSION (Android $KANDROID_VERSION)"
+          echo "🔧 工作流明文配置SUSFS"
+          cd kernel_workspace || { echo "❌ 工作目录不存在"; exit 1; }
+
+          # 1. 提取内核版本信息（与原二进制工具逻辑一致）
+          KERNEL_VERSION=$(awk '/^VERSION =/ {v=$3} /^PATCHLEVEL =/ {p=$3} /^SUBLEVEL =/ {s=$3} END {print v"."p"."s}' ./kernel_platform/common/Makefile) || { echo "❌ 获取内核版本失败"; exit 1; }
+          KANDROID_VERSION=$(grep -m1 '^BRANCH=' ./kernel_platform/common/build.config.constants ./kernel_platform/common/build.config.common 2>/dev/null | cut -d= -f2 | sed 's/^android//' | cut -d- -f1) || { echo "❌ 获取Android版本失败"; exit 1; }
+          KERNEL_MAIN_VERSION=$(echo "$KERNEL_VERSION" | awk -F. '{print $1"."$2}') || { echo "❌ 获取内核主版本失败"; exit 1; }
+          echo "内核版本: $KERNEL_VERSION，Android版本: $KANDROID_VERSION，主版本: $KERNEL_MAIN_VERSION"
           echo "KERNEL_VERSION=$KERNEL_VERSION" >> $GITHUB_ENV
           echo "KERNEL_MAIN_VERSION=$KERNEL_MAIN_VERSION" >> $GITHUB_ENV
           echo "KANDROID_VERSION=$KANDROID_VERSION" >> $GITHUB_ENV
+
+          # 2. 生成分支名并检查（保留原重试逻辑，增加网络诊断）
+          SUSFS_BRANCH="gki-android${KANDROID_VERSION}-${KERNEL_MAIN_VERSION}"
+          echo "尝试分支: $SUSFS_BRANCH"
+
+          # 增加3次重试+超时，确保Git命令稳定（工作流环境网络更可靠）
+          for RETRY in {1..3}; do
+            echo "⏳ 第 $RETRY 次检查分支 $SUSFS_BRANCH..."
+            if git ls-remote --exit-code --timeout 10 "$SUSFS_REPO" "$SUSFS_BRANCH" >/dev/null 2>&1; then
+              echo "✅ 分支 $SUSFS_BRANCH 存在，开始克隆..."
+              break
+            else
+              echo "⚠️ 分支 $SUSFS_BRANCH 暂不可达，等待2秒后重试..."
+              sleep 2
+            fi
+          done
+
+          # 若3次重试后仍不存在，尝试主分支
+          if ! git ls-remote --exit-code --timeout 10 "$SUSFS_REPO" "$SUSFS_BRANCH" >/dev/null 2>&1; then
+            echo "⚠️ 分支 $SUSFS_BRANCH 不存在，尝试主分支 main..."
+            SUSFS_BRANCH="main"
+            if ! git ls-remote --exit-code --timeout 10 "$SUSFS_REPO" "$SUSFS_BRANCH" >/dev/null 2>&1; then
+              echo "❌ 仓库 $SUSFS_REPO 中，$SUSFS_BRANCH 和 main 分支都不存在，请检查网络或仓库配置。"
+              exit 1
+            fi
+          fi
+
+          # 3. 克隆仓库（工作流环境执行，网络配置完整）
+          git clone "$SUSFS_REPO" -b "$SUSFS_BRANCH" --depth=1 susfs4ksu || { echo "❌ 克隆SUSFS失败"; exit 1; }
+          git clone "$SUKIPATCH_REPO" --depth=1 SukiSU_patch || { echo "❌ 克隆SukiSU_patch失败"; exit 1; }
+          cd kernel_platform || { echo "❌ 进入内核目录失败"; exit 1; }
+
+          # 4. 应用补丁（与原二进制工具逻辑完全一致）
+          PATCH_FILE="50_add_susfs_in_gki-android${KANDROID_VERSION}-${KERNEL_MAIN_VERSION}.patch"
+          if [ ! -f "../susfs4ksu/kernel_patches/$PATCH_FILE" ]; then
+            PATCH_FILE=$(find ../susfs4ksu/kernel_patches -name "50_add_susfs_in_gki-*.patch" | head -n1)
+            [ -z "$PATCH_FILE" ] && { echo "❌ 无SUSFS补丁"; exit 1; }
+          fi
+          cp "$PATCH_FILE" ./common/ || { echo "❌ 复制补丁失败"; exit 1; }
+          cp ../susfs4ksu/kernel_patches/fs/* ./common/fs/ 2>/dev/null || echo "⚠️ 无FS补丁"
+
+          cd ./common || { echo "❌ 进入common目录失败"; exit 1; }
+          if [[ "$KERNEL_MAIN_VERSION" == "6.6" ]]; then
+            TRUSTY_EXISTS=$(grep -q 'common-modules/trusty' "$GITHUB_WORKSPACE/.repo/manifests_fallback/${REPO_MANIFEST}.xml" && echo "true" || echo "false")
+            [ "$TRUSTY_EXISTS" = "false" ] && sed -i 's/-32,12 +32,38/-32,11 +32,37/g; /#include <trace\/hooks\/fs.h>/d' "$PATCH_FILE" || true
+          fi
+          patch -p1 < "$PATCH_FILE" 2>/dev/null || echo "⚠️ 补丁应用警告"
+          cp ../../SukiSU_patch/hooks/syscall_hooks.patch ./ 2>/dev/null && patch -p1 < syscall_hooks.patch 2>/dev/null || echo "⚠️ 钩子补丁警告"
+          echo "✅ SUSFS配置完成"
 
       - name: 🔧 Cache HMBird patch (缓存开机补丁)
         uses: actions/cache@v3
